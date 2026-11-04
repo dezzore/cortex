@@ -4,9 +4,10 @@ import {clipSafeText,providerFetch,providerJson,boundedProviderText,type Provide
 const record=(v:unknown):Record<string,unknown>|null=>v!==null&&typeof v==="object"&&!Array.isArray(v)?v as Record<string,unknown>:null;
 const team=(ctx:ProviderContext)=>ctx.team?`teamId=${encodeURIComponent(ctx.team)}`:"";
 const headers=(token:string)=>({Authorization:`Bearer ${token}`,"Content-Type":"application/json"});
+// Vercel may return gitSource as {type,ref,sha,repoId} without org/repo; it then names the repo in meta.githubCommitOrg/Repo.
 function verify(value:unknown,job:ConsoleJob,ctx:ProviderContext){
   const r=record(value),git=record(r?.gitSource),meta=record(r?.meta),[org,repo]=ctx.repository.split("/");
-  if(!r||typeof r.id!=="string"||!/^dpl_[A-Za-z0-9]{1,100}$/.test(r.id)||r.projectId!==ctx.project||meta?.cortex_job_id!==job.id||git?.type!=="github"||git.org!==org||git.repo!==repo||git.ref!==ctx.branch||git.sha!==job.sourceSha)return null;
+  if(!r||typeof r.id!=="string"||!/^dpl_[A-Za-z0-9]{1,100}$/.test(r.id)||r.projectId!==ctx.project||meta?.cortex_job_id!==job.id||git?.type!=="github"||(git.org??meta?.githubCommitOrg)!==org||(git.repo??meta?.githubCommitRepo)!==repo||git.ref!==ctx.branch||git.sha!==job.sourceSha)return null;
   if(job.providerId!==null&&r.id!==job.providerId)return null;
   if((job.operation==="deploy.production"&&r.target!=="production")||(job.operation==="deploy.preview"&&r.target!==null&&r.target!=="preview"))return null;
   return r;

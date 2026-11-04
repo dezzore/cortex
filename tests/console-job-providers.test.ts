@@ -93,6 +93,13 @@ describe("provider identity and acceptance",()=>{
     const status=await vercelStatus({...job,operation:"deploy.preview",providerId:"dpl_fixture"},ctx,"synthetic",fetcher);
     expect(status).toMatchObject({state:"succeeded",providerId:"dpl_fixture"});expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it("accepts the repoId-only gitSource Vercel returns when meta names the repository, and refuses another repository",async()=>{
+    const ctx={...context,provider:"vercel" as const,project:"prj_fixture"};
+    const response=(repo:string)=>({id:"dpl_fixture",projectId:"prj_fixture",gitSource:{type:"github",ref:"main",sha,repoId:1},meta:{cortex_job_id:id,githubCommitOrg:"fixture",githubCommitRepo:repo},target:null,readyState:"READY"});
+    await expect(vercelStatus({...job,operation:"deploy.preview",providerId:"dpl_fixture"},ctx,"synthetic",async()=>Response.json(response("app")))).resolves.toMatchObject({state:"succeeded"});
+    await expect(vercelStatus({...job,operation:"deploy.preview",providerId:"dpl_fixture"},ctx,"synthetic",async()=>Response.json(response("other")))).resolves.toBeNull();
+    await expect(vercelDispatch({...job,operation:"deploy.preview"},ctx,"synthetic",async()=>Response.json(response("app")))).resolves.toEqual({kind:"accepted",providerId:"dpl_fixture"});
+  });
   it("does not claim a terminal production deployment is live merely because aliasAssigned is truthy",async()=>{
     const ctx={...context,provider:"vercel" as const,project:"prj_fixture"};
     const response={id:"dpl_fixture",projectId:"prj_fixture",gitSource:{type:"github",org:"fixture",repo:"app",ref:"main",sha},meta:{cortex_job_id:id},target:"production",readyState:"READY",aliasAssigned:1};
