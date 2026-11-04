@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
       source,
       headers: [
         { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive, nosnippet" },
-        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "Referrer-Policy", value: "same-origin" },
       ],
     }));
   },

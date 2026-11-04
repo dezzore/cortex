@@ -24,7 +24,7 @@ describe("private deployment response headers", () => {
       nextConfig,
     });
     expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow, noarchive, nosnippet");
-    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("referrer-policy")).toBe("same-origin");
     expect(response.headers.has("location")).toBe(false);
     expect(response.headers.has("link")).toBe(false);
   });
