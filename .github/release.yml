@@ -1,0 +1,16 @@
+# Shapes GitHub's generated release notes (the "Generate release notes" button).
+# Published releases do not use them: .github/workflows/release.yml publishes
+# the reviewed .github/RELEASE_HEADER.md instead. "Action required" surfaces
+# first so an operator reads the manual steps — a new env var, a migration, re-wiring —
+# before running the one-command update, which cannot do those steps for them.
+# The label convention is documented in CONTRIBUTING.md (Releasing). Generated
+# notes are only a drafting aid: a missing section does not mean nothing manual is
+# needed; the reviewed header states the required actions.
+changelog:
+  categories:
+    - title: Action required
+      labels:
+        - action-required
+    - title: Changes
+      labels:
+        - "*"

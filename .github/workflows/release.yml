@@ -1,0 +1,98 @@
+name: release
+
+# Releases are provenance snapshots of main, cut by pushing a v* tag. The full check suite
+# re-runs AT THE TAG before anything is published — a release that skipped the checks would
+# be a claim the repo cannot back. Updates still ship from main; redeploy to update
+# (SECURITY.md). The release body is the reviewed .github/RELEASE_HEADER.md,
+# including current changes and explicit upgrade requirements. Publication does
+# not append generated author credits or contributor lists.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Checks on the tag itself, before the suite runs and before anyone is asked to
+  # approve publication. A bad tag fails here, not at the approval gate.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # Third-party actions are pinned to full commit SHAs; a movable tag is a supply-chain
+      # door this workflow does not need to leave open. The comment carries the version.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history, so the default branch is there to test ancestry against.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a tag from the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: git merge-base --is-ancestor HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
+      # The published text is the reviewed header and guide for exactly this version. A tag on
+      # a commit whose package version, header or guide is for another release stops here.
+      - name: Require the tag to match the reviewed release text
+        run: |
+          test "v$(jq -r .version package.json)" = "$GITHUB_REF_NAME"
+          grep -qxF "## What changed in ${GITHUB_REF_NAME}" .github/RELEASE_HEADER.md
+          test -f "docs/releases/${GITHUB_REF_NAME}.md"
+  verify:
+    needs: preflight
+    # Re-run portable unit/build and zero-skip native gates at this exact tag.
+    uses: ./.github/workflows/ci.yml
+  release:
+    # Both, not just verify: publication must not depend on verify happening to propagate a
+    # preflight failure. release-workflow.test.ts also forbids if: and continue-on-error here.
+    needs: [preflight, verify]
+    # Configure approved v* tags and a required maintainer review in this
+    # environment. Passing CI alone does not approve publication.
+    environment:
+      name: release
+      url: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      # gh release create --discussion-category opens the Announcements thread.
+      discussions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # The one asset a source-served project has: the exact tree at the tag, packaged here
+      # rather than trusted from an archive produced elsewhere, so the attestation below has
+      # a stable subject. HEAD is the tag's commit on a tag-push run.
+      - name: Package the source snapshot
+        run: git archive --format=tar.gz --prefix="cortex-${GITHUB_REF_NAME}/" -o "cortex-${GITHUB_REF_NAME}.tar.gz" HEAD
+      # Signed provenance: proves this exact tarball came out of this workflow run at this
+      # tag. Verify with: gh attestation verify <file> --repo <owner/repository>
+      - name: Attest the snapshot's provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: cortex-${{ github.ref_name }}.tar.gz
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22.23.2'
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CORTEX_RELEASE_COMMIT="$(git rev-parse HEAD)" node scripts/release-header.mjs > /tmp/notes.md
+          # The Announcements thread is a nicety; a release must never fail because
+          # Discussions is toggled off, so the flag gets one try and is then dropped.
+          publish() {
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --title "Cortex ${GITHUB_REF_NAME}" \
+              --notes-file /tmp/notes.md \
+              "$@" \
+              "cortex-${GITHUB_REF_NAME}.tar.gz"
+          }
+          publish --discussion-category "Announcements" || publish

@@ -1,0 +1,115 @@
+/*
+ * What is left of the design-1b instrument sheet after the v2 pass. Each console screen now
+ * carries its own plain stylesheet (overview.css, trends.css, ask.css, ops.css, settings.css); this module holds only the rules six files still render:
+ * deployment.tsx, loading.tsx, settings/models-table.tsx, and the three attention files.
+ * Nothing here has a filled card background — separation is 1px rules on the ground, figures
+ * are mono, and cyan appears only where something is live.
+ */
+
+/* ---- blocks ---------------------------------------------------------------- */
+.block { composes: card from global; }
+.blockHead {
+  display: flex; align-items: baseline; gap: 12px; justify-content: space-between;
+  font-family: var(--mono); font-size: 11px; letter-spacing: var(--tracking-label);
+  text-transform: uppercase; color: var(--muted); margin-bottom: 14px;
+}
+.dim { color: var(--faint); text-transform: none; letter-spacing: 0.04em; }
+.footNote {
+  font-family: var(--mono); font-size: 11px; color: var(--faint); padding: 12px 0 6px;
+}
+
+/* ---- triage ----------------------------------------------------------------- */
+.triage {
+  composes: card from global; display: grid; grid-template-columns: minmax(300px, 5fr) 7fr; gap: 0 40px; }
+.queue { border-bottom: 1px solid var(--line); padding-top: 20px; }
+.qRow {
+  display: grid; grid-template-columns: 44px 1fr; grid-template-rows: auto auto;
+  gap: 2px 12px; width: 100%; text-align: left; background: none; border: 0;
+  border-bottom: 1px solid var(--hair); padding: 10px 8px; cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.qRow:hover { background: var(--sunk); }
+.qOn { border-left-color: var(--accent); background: var(--sunk); }
+.pill {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+  border: 1px solid currentColor; border-radius: 3px; padding: 1px 5px; grid-row: span 2;
+  align-self: center; text-align: center;
+}
+.pillCrit { color: var(--crit); }
+.pillWarn { color: var(--warn); }
+/* The watch tier is deliberately quieter than warn: mechanical structure worth a glance, not a
+   problem — in a monochrome theme the recede IS the ranking. */
+.pillWatch { color: var(--muted); }
+.qTitle { font-size: 12px; color: var(--ink); }
+.qLoc { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.detail { padding-top: 20px; }
+.detailLoc { font-family: var(--mono); font-size: 11px; color: var(--accent); text-transform: none; letter-spacing: 0.02em; }
+.detailTitle {
+  font-family: var(--display); font-weight: 700; font-size: 30px; text-transform: uppercase;
+  letter-spacing: var(--tracking-display); color: var(--bright); margin: 6px 0 16px;
+}
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 10px 16px; }
+.kv dt {
+  font-family: var(--mono); font-size: 10px; letter-spacing: var(--tracking-label);
+  text-transform: uppercase; color: var(--faint); padding-top: 2px;
+}
+.kv dd { font-size: 13px; color: var(--ink); line-height: 1.55; margin: 0; }
+
+/* ---- narrow ------------------------------------------------------------------ */
+@media (max-width: 900px) {
+  .triage { grid-template-columns: 1fr; }
+}
+
+/* ---- shared labels ------------------------------------------------------------ */
+.label {
+  font: 500 10px var(--mono); letter-spacing: var(--tracking-label);
+  text-transform: uppercase; color: var(--faint);
+}
+.note { font: 400 11px/1.65 var(--mono); color: var(--faint); }
+/* The label names the panel and must stay on one line; the note beside it is the part with
+   something to say, so it takes the wrapping and the remaining width. */
+
+/* ---- readers ------------------------------------------------------------------------ */
+/* Buttons read as instrument switches, not web buttons: monospace, uppercase, and quiet until
+   they matter — a control that shouts competes with the numbers it is meant to serve. Disabled
+   is styled to look genuinely unavailable rather than merely dim, because every disabled
+   control here has a reason and a title explaining it. */
+.refused {
+  padding: 9px 12px; border-left: 2px solid var(--crit); background: var(--sunk);
+  font-size: 12px; color: var(--ink); line-height: 1.5;
+}
+.rdBtn {
+  border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface);
+  padding: 5px 9px; cursor: pointer; color: var(--muted); white-space: nowrap;
+  font: 500 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  transition: color 0.16s var(--ease-out), border-color 0.16s var(--ease-out);
+}
+.rdBtn:hover:enabled { color: var(--bright); border-color: var(--muted); }
+/* Inert ink and a hairline, never opacity. */
+.rdBtn:disabled { color: var(--disabled); border-color: var(--rule-hair); background: transparent; cursor: not-allowed; }
+
+/* ---- proposals (attention) ----------------------------------------------------------- */
+/* Guest text, rendered as text: monospace body, no markdown, no clickable anything. The accept
+   button is the only affirmative control in the console and reads like one. */
+.propRow { border-bottom: 1px solid var(--hair); }
+.propRow:last-of-type { border-bottom: 0; }
+.propHead {
+  display: flex; align-items: baseline; gap: 12px; width: 100%; padding: 11px 0;
+  background: none; border: 0; cursor: pointer; text-align: left;
+}
+.propHead:hover { background: var(--sunk); }
+.propPath { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.propMode {
+  font: 500 10px var(--mono); letter-spacing: var(--tracking-label);
+  text-transform: uppercase; color: var(--muted);
+}
+.propBody { padding: 4px 0 18px; display: flex; flex-direction: column; gap: 10px; }
+.propWhy { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink); }
+.propContent {
+  margin: 0; padding: 12px 14px; background: var(--sunk); border-left: 2px solid var(--line);
+  border-radius: var(--radius-sm); font: 400 12px/1.55 var(--mono); color: var(--ink);
+  white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow: auto;
+}
+.propActions { display: flex; gap: 10px; justify-content: flex-end; }
+.propAccept { color: var(--ok); border-color: var(--ok); }
+.propAccept:hover:enabled { color: var(--ok); border-color: var(--ok); }

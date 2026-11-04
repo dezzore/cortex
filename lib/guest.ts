@@ -1,0 +1,231 @@
+import { kv, kvEnv } from "./kv";
+import { DEFAULT_MODEL } from "./ask";
+import { providerOf, type ReaderModel } from "./reader";
+import type { SettingsState } from "./settings";
+import {GUEST_POLICY_SCRIPT} from "./guest-policy-atomic";
+
+/**
+ * What a guest may do, and how much of it.
+ *
+ * The shape of the whole thing is one sentence the operator wrote: shared context ON ASK, not openly
+ * shared. A guest never receives the corpus. It asks a question, Claude reads the brain, and a
+ * scoped answer comes back. The brain travels; it does not get handed over.
+ *
+ * EVERY DEFAULT HERE IS THE LOCKED-DOWN ONE. An unset key, an unreachable store, a value that no
+ * longer parses — all of them land on projects-only, no citations, a low ceiling. The failure
+ * direction for a policy object is not negotiable: a settings read that quietly returned "no
+ * restrictions" would turn a store blip into full corpus access for whoever holds the guest URL.
+ */
+
+export interface GuestPolicy {
+  /** Path prefixes a guest's answers may draw on. Never empty — empty would mean everything. */
+  scope: string[];
+  /** Whether a guest sees source path and verbatim evidence. Off: it learns proven/unproven only. */
+  citations: boolean;
+  /** Asks per UTC day across all guests. */
+  dailyAsks: number;
+  /** Ceiling on the k a guest may request. */
+  maxK: number;
+}
+
+export const GUEST_DEFAULTS: GuestPolicy = {
+  scope: ["projects/"],
+  citations: false,
+  dailyAsks: 50,
+  maxK: 8,
+};
+
+export interface GuestState extends GuestPolicy {
+  revision?:string|null;
+  source: "store" | "unconfigured" | "unreachable";
+  /** Asks already spent today, or null when the counter could not be read. */
+  usedToday: number | null;
+}
+
+const READ_TIMEOUT_MS = 1500;
+const key = () => `cortex:guest:${kvEnv()}`;
+/** UTC, deliberately: a day boundary that moves with a timezone is a budget that can be gamed. */
+const dayKey = (now: number) =>
+  `cortex:guest:${kvEnv()}:asks:${new Date(now).toISOString().slice(0, 10)}`;
+
+export type GuestSnapshot=GuestPolicy&{revision:string};
+export class GuestPolicyConflict extends Error {readonly code="conflict";constructor(readonly current:GuestSnapshot){super("Guest policy changed in another tab. Current policy loaded; review it before another edit.");}}
+// Fixed protocol marker returned by Redis for an absent policy. This is not a
+// credential or security digest; keep it byte-identical to the Lua CAS protocol.
+const MISSING_REVISION = "b3d99964bee9e17d4f75dd0722414933f8e5189a";
+function snapshot(raw:unknown):{outcome:string;current:GuestSnapshot}{
+  if(!Array.isArray(raw)||raw.length!==3||typeof raw[0]!=="string"||typeof raw[2]!=="string"||!/^[a-f0-9]{40}$/.test(raw[2]))throw new Error("guest policy unavailable");
+  // Upstash recursively JSON-decodes EVAL members. Never parse a second time: a stored JSON
+  // string containing "{}" is not a policy. Lua's revision identifies the original bytes,
+  // including whitespace; do not reconstruct it by serializing the decoded object.
+  const missing=raw[1]===""&&raw[2]===MISSING_REVISION;
+  if(!missing&&(!raw[1]||typeof raw[1]!=="object"||Array.isArray(raw[1])))throw new Error("guest policy unavailable");
+  if(!["read","saved","conflict"].includes(raw[0])||(missing&&raw[0]==="saved"))throw new Error("guest policy unavailable");
+  return{outcome:raw[0],current:{...parse(missing?null:raw[1]),revision:raw[2]}};
+}
+
+/**
+ * A scope entry is either an exact note path or a directory prefix ENDING IN `/`.
+ *
+ * The trailing slash is load-bearing, because applyScope matches with startsWith: an entry of
+ * `projects/project-alpha` — which the old pattern allowed, and which reads as "the project-alpha
+ * project" — also covers projects/project-alpha-comp.md and projects/project-alpha-private.md. A
+ * prefix that can stop mid-segment is a scope that silently includes siblings, and with citations off there is
+ * nothing in the reply to reveal it.
+ *
+ * `archive/` is gone: corpus.ts excludes the whole prefix from the reader corpus, so an archive
+ * scope could never match a file and a guest ticking it got NOT IN BRAIN on every question.
+ */
+const SCOPE_RE = /^(profile\.md|(projects|notes|log|history)\/([A-Za-z0-9._-]+\.md|[A-Za-z0-9._/-]*\/)?)$/;
+
+export function isScopeEntry(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0 && !v.includes("..") && SCOPE_RE.test(v);
+}
+
+function parse(raw: unknown): GuestPolicy {
+  let o: unknown = raw;
+  if (typeof o === "string") {
+    try {
+      o = JSON.parse(o) as unknown;
+    } catch {
+      return { ...GUEST_DEFAULTS };
+    }
+  }
+  if (o === null || typeof o !== "object") return { ...GUEST_DEFAULTS };
+  const r = o as Record<string, unknown>;
+  // Legacy entries stored before scope entries required a trailing slash (`projects/project-alpha`)
+  // are NORMALISED, not dropped. Dropping them would empty the array and fall through to
+  // GUEST_DEFAULTS below — turning a deliberately narrow policy into the wide default, which is
+  // the exact fail-open direction this file forbids. Appending the slash keeps the operator's
+  // intent and fails closed: if no such directory exists the guest simply matches nothing.
+  const stored: unknown[] = Array.isArray(r.scope) ? r.scope : [];
+  const normalised = stored.map((s) =>
+    typeof s === "string" && s.length > 0 && !s.endsWith("/") && !s.endsWith(".md") ? `${s}/` : s
+  );
+  const scope = normalised.filter(isScopeEntry);
+  const num = (v: unknown, fallback: number, max: number) =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(Math.floor(v), max) : fallback;
+  return {
+    // A stored scope that parsed to nothing falls back to the default, never to "everything".
+    scope: scope.length ? scope : [...GUEST_DEFAULTS.scope],
+    citations: r.citations === true,
+    dailyAsks: num(r.dailyAsks, GUEST_DEFAULTS.dailyAsks, 1000),
+    maxK: num(r.maxK, GUEST_DEFAULTS.maxK, 40),
+  };
+}
+
+export async function readGuestPolicy(now = Date.now()): Promise<GuestState> {
+  const r = kv();
+  if (!r) return { ...GUEST_DEFAULTS, revision:null, source: "unconfigured", usedToday: null };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("kv read timeout")), READ_TIMEOUT_MS);
+    });
+    const [raw, used] = await Promise.race([
+      Promise.all([r.eval(GUEST_POLICY_SCRIPT,[key()],["read"]), r.get<number>(dayKey(now))]),
+      timeout,
+    ]);
+    const result=snapshot(raw);
+    if(result.outcome!=="read")throw new Error("guest policy unavailable");
+    return {
+      ...result.current,
+      source: "store",
+      usedToday: typeof used === "number" ? used : Number(used) || 0,
+    };
+  } catch {
+    return { ...GUEST_DEFAULTS, revision:null, source: "unreachable", usedToday: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function writeGuestPolicy(next: GuestPolicy,expectedRevision?:string): Promise<GuestSnapshot> {
+  for (const s of next.scope) {
+    if (!isScopeEntry(s)) throw new Error(`"${s}" is not a valid scope path`);
+  }
+  if (!next.scope.length) {
+    // Refused rather than stored: an empty scope reads as "no restriction" everywhere it is
+    // used, so the one policy that must never be expressible is the empty one.
+    throw new Error("a guest scope cannot be empty — remove the guest secret to close the door");
+  }
+  const r = kv();
+  if (!r) throw new Error("no KV store is configured, so guest policy has nowhere to live");
+  if(!expectedRevision||!/^[a-f0-9]{40}$/.test(expectedRevision))throw new Error("guest revision required");
+  const value=JSON.stringify({scope:next.scope,citations:next.citations,dailyAsks:next.dailyAsks,maxK:next.maxK});
+  if(Buffer.byteLength(value)>65536)throw new Error("guest policy too large");
+  const result=snapshot(await r.eval(GUEST_POLICY_SCRIPT,[key()],["write",expectedRevision,value]));
+  if(result.outcome==="conflict")throw new GuestPolicyConflict(result.current);
+  if(result.outcome!=="saved")throw new Error("guest policy unavailable");
+  return result.current;
+}
+
+/**
+ * The guest door is CLOSED whenever the policy could not actually be read.
+ *
+ * GUEST_DEFAULTS is a safe floor for a deployment that has never configured anything. It is not
+ * a safe substitute for a policy that exists and was unreachable: an operator who narrowed the
+ * scope to one note and the budget to five asks would silently get projects/ and fifty the
+ * moment Upstash went slow — the widening happening precisely when the store is under the load
+ * that makes a limit matter. Enforced at the door rather than inside each limit check, so a
+ * future guest tool cannot forget it.
+ */
+export function requireReadablePolicy(policy: GuestState): void {
+  if (policy.source !== "store") {
+    throw new Error(
+      "the guest policy could not be read, so the door is closed until the store answers"
+    );
+  }
+}
+
+/** One counter per metered guest action. Separate keys: a propose flood must not eat the ask
+ *  budget, and an ask flood must not silence the proposal channel. */
+const dayKeyFor = (action: "asks" | "proposals", now: number) =>
+  `cortex:guest:${kvEnv()}:${action}:${new Date(now).toISOString().slice(0, 10)}`;
+
+async function spend(action: "asks" | "proposals", limit: number, now: number, what: string) {
+  const r = kv();
+  if (!r) {
+    // No store means no counter, and an unmeterable budget is not a budget. The guest door
+    // needs KV anyway (proposals live there), so this is a misconfiguration, not a mode.
+    throw new Error("the guest door needs a KV store to meter usage");
+  }
+  const k = dayKeyFor(action, now);
+  const used = await r.incr(k);
+  // Two days, so a counter written just before midnight still expires on its own.
+  if (used === 1) await r.expire(k, 172_800);
+  if (used > limit) {
+    throw new Error(`the guest daily limit of ${limit} ${what} is spent — it resets at 00:00 UTC`);
+  }
+}
+
+/**
+ * Spend one ask against today's budget, or refuse. INCR first and compare after, so two
+ * concurrent guests cannot both read "49 used" and both proceed.
+ */
+export async function spendGuestAsk(policy: GuestPolicy, now = Date.now()): Promise<void> {
+  await spend("asks", policy.dailyAsks, now, "asks");
+}
+
+/** Proposals per UTC day. Derived from the ask budget rather than configured separately — the
+ *  operator sets one number for "how much may a guest cost me", and an unmetered write-shaped
+ *  tool was the hole: each propose is an HGETALL plus an HSET, unbounded and free. */
+export const guestProposalLimit = (policy: GuestPolicy): number =>
+  Math.max(5, Math.min(policy.dailyAsks, 100));
+
+export async function spendGuestPropose(policy: GuestPolicy, now = Date.now()): Promise<void> {
+  await spend("proposals", guestProposalLimit(policy), now, "proposals");
+}
+
+/**
+ * Which model answers a guest. Always a Claude one.
+ *
+ * "Claude is orchestration always and gates other models" — made mechanical rather than left as
+ * a habit. The operator can point their own default at any allowlisted reader; a guest's question
+ * is still read by the model they trust to hold the gate, and flipping their own default can never
+ * quietly hand an untrusted caller's traffic to a different provider.
+ */
+export function guestReaderModel(settings: SettingsState): ReaderModel {
+  const d = settings.defaultReader;
+  return d && providerOf(d) === "anthropic" ? d : (DEFAULT_MODEL as ReaderModel);
+}

@@ -1,0 +1,51 @@
+{
+  "name": "cortex",
+  "version": "2.0.2",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "onboard": "node scripts/onboard.mjs",
+    "update": "node scripts/update.mjs",
+    "ingest": "node scripts/ingest.mjs",
+    "coverage": "vitest run --coverage.enabled"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@sentry/nextjs": "^10.69.0",
+    "@upstash/redis": "^1.38.2",
+    "mcp-handler": "2.1.0",
+    "next": "16.3.8",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "@types/pg": "^8.20.4",
+    "@types/react": "^19",
+    "@types/react-dom": "19.2.7",
+    "@vitest/coverage-v8": "^4.1.11",
+    "happy-dom": "20.14.0",
+    "pg": "^8.22.0",
+    "typescript": "^7",
+    "vitest": "4.1.11"
+  },
+  "overrides": {
+    "sharp": "0.35.4"
+  },
+  "description": "CORTEX by OBELYTH: a private Markdown brain and dashboard for compatible MCP clients, with verified citations.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Obelyth/cortex"
+  },
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22.18.0 <23"
+  }
+}

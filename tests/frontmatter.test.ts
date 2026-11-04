@@ -1,0 +1,313 @@
+import { describe, expect, it } from "vitest";
+import { parseFrontmatter, routerLine, buildRouter, routerCut, safeText } from "../lib/frontmatter";
+import { monthKey } from "../lib/digest";
+
+describe("parseFrontmatter", () => {
+  it("reads description and tags from a note with nested frontmatter", () => {
+    const text = [
+      "---",
+      "name: example-bread-recipe",
+      'description: "Rye loaf: don\'t skip the overnight proof."',
+      "metadata:",
+      "  type: recipe",
+      "---",
+      "",
+      "Mix at night, bake in the morning.",
+    ].join("\n");
+    const fm = parseFrontmatter(text);
+    expect(fm.description).toBe("Rye loaf: don't skip the overnight proof.");
+    // Byte-faithful: everything after the closing fence is kept verbatim, blank line included.
+    // Trimming would be a silent rewrite of note text, and note text is what quotes are proven
+    // against.
+    expect(fm.body).toBe("\nMix at night, bake in the morning.");
+  });
+
+  it("reads tags as a YAML flow sequence and as a comma list", () => {
+    const flow = "---\ndescription: x\ntags: [cortex, supabase]\n---\nbody";
+    const csv = "---\ndescription: x\ntags: cortex, supabase\n---\nbody";
+    expect(parseFrontmatter(flow).tags).toEqual(["cortex", "supabase"]);
+    expect(parseFrontmatter(csv).tags).toEqual(["cortex", "supabase"]);
+  });
+
+  it("reads tags as a YAML block sequence", () => {
+    const text = "---\ndescription: x\ntags:\n  - cortex\n  - supabase\n---\nbody";
+    expect(parseFrontmatter(text).tags).toEqual(["cortex", "supabase"]);
+  });
+
+  // Notes that predate the convention must not become invisible or throw. Absence is
+  // the common case on day one, and it has to be a non-event.
+  it("degrades to an empty record when there is no frontmatter", () => {
+    const fm = parseFrontmatter("# Project Beta\n\n## Status\nArchived.");
+    expect(fm.description).toBe("");
+    expect(fm.tags).toEqual([]);
+    expect(fm.body).toBe("# Project Beta\n\n## Status\nArchived.");
+  });
+
+  // A note that merely CONTAINS `---` (a horizontal rule, or a `--- log/x.md ---` banner) is not
+  // a note with frontmatter. Only an opening fence on line 1 counts.
+  it("ignores a --- that is not the first line", () => {
+    const text = "# Title\n\n---\ndescription: not frontmatter\n---\n";
+    expect(parseFrontmatter(text).description).toBe("");
+    expect(parseFrontmatter(text).body).toBe(text);
+  });
+
+  it("does not treat an unterminated fence as frontmatter", () => {
+    const text = "---\ndescription: dangling\nno closing fence here";
+    expect(parseFrontmatter(text).description).toBe("");
+    expect(parseFrontmatter(text).body).toBe(text);
+  });
+
+  it("strips matching quotes but keeps apostrophes and inner colons", () => {
+    expect(parseFrontmatter("---\ndescription: 'it: works'\n---\nb").description).toBe("it: works");
+    expect(parseFrontmatter("---\ndescription: the operator's brain\n---\nb").description).toBe("the operator's brain");
+  });
+
+  it("tolerates CRLF line endings", () => {
+    const text = "---\r\ndescription: windows\r\n---\r\nbody";
+    expect(parseFrontmatter(text).description).toBe("windows");
+  });
+});
+
+describe("routerLine", () => {
+  it("redacts before truncating and never cuts an astral code point", () => {
+    expect(safeText("prefix sk-abcdefghijklmnopZZ suffix", 24)).not.toContain("sk-");
+    expect(safeText("prefix sk-abcdefghijklmnopZZ suffix", 24)).toContain("<redacted-token>");
+    const cut = safeText("abcd😀tail", 6);
+    expect(cut).toBe("abcd😀…");
+    expect(new TextEncoder().encode(cut).toString()).not.toContain("65533");
+    expect(cut).not.toContain("�");
+  });
+
+  it("renders path, description, tags and date", () => {
+    const line = routerLine({
+      path: "projects/project-beta.md",
+      description: "Archived prototype; kept for reference.",
+      tags: ["project-beta", "archived"],
+      updated: "2026-07-24",
+      stale: false,
+    });
+    expect(line).toBe(
+      "- projects/project-beta.md · Archived prototype; kept for reference. · project-beta, archived · 2026-07-24"
+    );
+  });
+
+  // A note with no description still gets a line. Dropping it would make the note invisible in
+  // the one surface that lists everything — the exact silent-loss failure this system forbids.
+  it("still renders a line when there is no description", () => {
+    const line = routerLine({
+      path: "notes/x.md",
+      description: "",
+      tags: [],
+      updated: "",
+      stale: false,
+    });
+    expect(line).toBe("- notes/x.md · (no description yet)");
+  });
+
+  it("marks a stale description rather than hiding the line", () => {
+    const line = routerLine({
+      path: "notes/x.md",
+      description: "d",
+      tags: [],
+      updated: "2026-01-01",
+      stale: true,
+    });
+    expect(line).toContain("notes/x.md");
+    expect(line).toContain("d");
+    expect(line).toContain("STALE");
+  });
+});
+
+describe("buildRouter", () => {
+  const files = new Map<string, string>([
+    ["profile.md", "---\ndescription: Who the operator is.\n---\nbody"],
+    ["projects/a.md", "---\ndescription: Project A.\ntags: [alpha]\n---\nbody"],
+    ["notes/b.md", "# B\nno frontmatter here"],
+    ["log/2026-08-04.md", "# Log\n\n## 12:35 · cortex\n\ntext"],
+  ]);
+
+  it("groups by directory in the INDEX order and lists every file", () => {
+    const out = buildRouter(files);
+    const order = ["Root", "projects", "notes", "log"];
+    let last = -1;
+    for (const d of order) {
+      const at = out.indexOf(`## ${d}`);
+      expect(at).toBeGreaterThan(last);
+      last = at;
+    }
+    // Every live path, or its month: day logs collapse to one row per month, so `log/2026-08-04.md`
+    // is routed by `log/2026-08` rather than by a row of its own. That is the coverage guarantee
+    // in its post-collapse form — no path is unreachable, some are reached through their month.
+    for (const p of files.keys()) expect(out, p).toContain(monthKey(p) ?? p);
+  });
+
+  it("carries descriptions where they exist and marks where they do not", () => {
+    const out = buildRouter(files);
+    expect(out).toContain("Project A.");
+    expect(out).toContain("(no description yet)");
+  });
+
+  it("reports coverage so the gap is visible instead of implied", () => {
+    // 3, not 2: the day-log's description is derived from its own entry headings, so it counts as
+    // described without anyone having authored one.
+    expect(buildRouter(files)).toMatch(/3 of 4 notes/);
+  });
+
+  it("derives a month's line instead of asking for a description", () => {
+    const out = buildRouter(files);
+    // Derived from the day's own entry headings, then summed onto the month it belongs to.
+    // Nobody authored any of it, and nobody has to.
+    expect(out).toContain("- log/2026-08 · 1 day log · 1 entry · cortex");
+    expect(out).not.toContain("log/2026-08-04.md");
+  });
+
+  it("is deterministic — same input, byte-identical output", () => {
+    expect(buildRouter(files)).toBe(buildRouter(new Map([...files].reverse())));
+  });
+});
+
+describe("buildRouter — the budget is the document's, wrapper included", () => {
+  // Enough notes that the wrapper (header + coverage + `## <dir>` headings) is dwarfed by rows,
+  // and budgets can land anywhere inside the row run.
+  const many = new Map<string, string>(
+    Array.from({ length: 40 }, (_, i) => [
+      `notes/note-${String(i).padStart(2, "0")}.md`,
+      `---\ndescription: "A note about topic ${i}, with enough words to give the row realistic length."\n---\n\nbody`,
+    ])
+  );
+
+  it("BUG GUARD: the returned document never exceeds the budget — wrapper bytes included", () => {
+    // The old cut enforced row bytes only, so the rendered document ran over by exactly the
+    // wrapper and the overshoot drifted
+    // with the shape of the corpus. Probe budgets across the whole range, including ones that
+    // land mid-row, and demand the contract the constant's name promises.
+    const uncapped = buildRouter(many).length;
+    for (const budget of [800, 1200, 2000, 3000, uncapped - 1, uncapped, uncapped + 500]) {
+      const out = buildRouter(many, new Map(), budget);
+      expect(new TextEncoder().encode(out).byteLength, `budget ${budget}`).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it("keeps a bounded discovery route when hundreds of log-month hints cannot fit", () => {
+    const months = new Map<string, string>();
+    for (let i = 0; i < 400; i++) {
+      const year = 1900 + Math.floor(i / 12);
+      const month = String((i % 12) + 1).padStart(2, "0");
+      months.set(`log/${year}-${month}-01.md`, `# Log\n\n## 09:00 · hotel\n\nmonth ${i}`);
+    }
+    const out = buildRouter(months, new Map(), 2_000);
+    const cut = routerCut(months, new Map(), 2_000);
+    expect(new TextEncoder().encode(out).byteLength).toBeLessThanOrEqual(2_000);
+    expect(cut.dropped.length).toBeGreaterThan(0);
+    expect(out).toContain("did not fit this router's budget");
+    expect(out).toContain("brain_corpus");
+  });
+
+  it("what the budget refuses is said out loud, and nothing is lost from the cut", () => {
+    const out = buildRouter(many, new Map(), 2000);
+    expect(out).toMatch(/further notes? did not fit this router's budget/);
+    const cut = routerCut(many, new Map(), 2000);
+    expect(cut.rendered.length + cut.dropped.length).toBe(40);
+    // The dropped count in the prose is the cut's own number, not a second derivation.
+    expect(out).toContain(`_${cut.dropped.length} further note`);
+  });
+
+  it("a capped render is still deterministic — same input, byte-identical output", () => {
+    expect(buildRouter(many, new Map(), 2000)).toBe(
+      buildRouter(new Map([...many].reverse()), new Map(), 2000)
+    );
+  });
+
+  it("enforces the document ceiling in UTF-8 bytes for multibyte rows", () => {
+    const unicode = new Map(
+      Array.from({ length: 30 }, (_, i) => [
+        `notes/unicode-${i}.md`,
+        `---\ndescription: "${"界😀e\u0301".repeat(16)}"\n---\nbody`,
+      ])
+    );
+    const out = buildRouter(unicode, new Map(), 2_000);
+    expect(new TextEncoder().encode(out).byteLength).toBeLessThanOrEqual(2_000);
+    expect(out).not.toContain("�");
+  });
+
+  it("rejects a budget too small for the minimum truthful router envelope", () => {
+    expect(() => buildRouter(new Map([["notes/a.md", "body"]]), new Map(), 10)).toThrow(
+      /router budget .*too small/i
+    );
+  });
+
+  it("an uncapped call is untouched by the fitting loop", () => {
+    expect(buildRouter(many).length).toBeGreaterThan(2000);
+    expect(buildRouter(many)).toBe(buildRouter(many, new Map(), Infinity));
+  });
+});
+
+describe("parseFrontmatter — YAML block scalars", () => {
+  // A serialiser folds any one-line description past its line width into this shape, so it is not
+  // a hypothetical. Reading the indicator as the value put the literal ">-" in the router, counted
+  // the note as described, and made applyDescription refuse to fix it — permanently, because ">-"
+  // is truthy.
+  it.each([">-", ">", "|", "|-", "|+"])("folds a %s block scalar onto its indented lines", (ind) => {
+    const t = `---\ndescription: ${ind}\n  A one-sentence description that a serialiser folded.\ntags: [cortex]\n---\nbody`;
+    const fm = parseFrontmatter(t);
+    expect(fm.description).toBe("A one-sentence description that a serialiser folded.");
+    expect(fm.tags).toEqual(["cortex"]);
+  });
+
+  it("joins a multi-line block scalar into one line", () => {
+    const t = `---\ndescription: >-\n  first part\n  second part\n---\nbody`;
+    expect(parseFrontmatter(t).description).toBe("first part second part");
+  });
+
+  it("never renders a bare indicator as the description", () => {
+    const t = `---\ndescription: >-\n---\nbody`;
+    expect(parseFrontmatter(t).description).toBe("");
+  });
+});
+
+/**
+ * Temperature governs RENDERING, never existence (spec §7.2). Every live note keeps a router
+ * row; the always-loaded slice is hot + warm. These tests hold the line that cold material is
+ * withheld from context but never from the operator.
+ */
+describe("buildRouter — temperatures", () => {
+  const files = new Map<string, string>([
+    ["profile.md", '---\ndescription: "Who the operator is and how they work"\ntags: [profile]\n---\nbody'],
+    ["projects/hot.md", '---\ndescription: "A live project with a long description that carries real detail"\ntags: [live, alpha]\n---\nbody'],
+    ["notes/warm.md", '---\ndescription: "A warm note whose description is long enough to be shortened when compressed for the warm tier"\ntags: [warm, beta]\n---\nbody'],
+    ["archive/cold.md", '---\ndescription: "Superseded material kept for the record"\ntags: [old]\n---\nbody'],
+  ]);
+  const temps = new Map<string, { temperature: "hot" | "warm" | "cold" }>([
+    ["profile.md", { temperature: "hot" }],
+    ["projects/hot.md", { temperature: "hot" }],
+    ["notes/warm.md", { temperature: "warm" }],
+    ["archive/cold.md", { temperature: "cold" }],
+  ]);
+
+  it("renders hot in full, warm compressed, and withholds cold", () => {
+    const out = buildRouter(files, temps);
+    expect(out).toContain("A live project with a long description that carries real detail");
+    expect(out).toContain("live, alpha"); // hot keeps its tags
+    expect(out).toContain("notes/warm.md");
+    expect(out).not.toContain("warm, beta"); // warm drops tags to buy its presence
+    expect(out).not.toContain("archive/cold.md"); // cold is not rendered
+  });
+
+  it("counts what it withheld and says how to reach it — never a silent omission", () => {
+    const out = buildRouter(files, temps);
+    expect(out).toMatch(/1 colder note not listed/);
+    expect(out).toContain("brain_corpus");
+  });
+
+  // The degrade path that matters: no scores must mean the pre-temperature behaviour, not an
+  // empty router. Hiding rows because a store blinked would be silent loss.
+  it("renders every row when no temperatures are supplied at all", () => {
+    const out = buildRouter(files);
+    for (const p of files.keys()) expect(out).toContain(p);
+    expect(out).not.toMatch(/colder note/);
+  });
+
+  it("still counts every note in its coverage line, cold included", () => {
+    expect(buildRouter(files, temps)).toMatch(/4 of 4 notes/);
+  });
+});
