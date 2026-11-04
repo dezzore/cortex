@@ -16,25 +16,25 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
-    "@modelcontextprotocol/server": "2.0.0",
-    "@sentry/nextjs": "^10.69.0",
+    "@modelcontextprotocol/server": "2.4.0",
+    "@sentry/nextjs": "^10.75.2",
     "@upstash/redis": "^1.38.2",
     "mcp-handler": "2.1.0",
-    "next": "16.3.8",
+    "next": "16.4.5",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26",
     "@types/pg": "^8.20.4",
     "@types/react": "^19",
     "@types/react-dom": "19.2.7",
-    "@vitest/coverage-v8": "^4.1.11",
-    "happy-dom": "20.14.0",
+    "@vitest/coverage-v8": "^4.1.12",
+    "happy-dom": "21.0.4",
     "pg": "^8.22.0",
     "typescript": "^7",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "overrides": {
     "sharp": "0.35.4"
